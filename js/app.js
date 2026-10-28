@@ -10,7 +10,7 @@
   // ---------- Config ----------
   const CFG = {
     corridorM: 800,          // POIs counted within this distance of the route
-    hospitalSearchM: 10000,  // search radius for nearest-hospital calculation
+    hospitalSearchM: 6000,   // search radius for nearest-hospital calculation
     chokeM: 25,              // bridges / tunnels on the route itself
     crimeBufferM: 150,       // crimes counted within this distance of a segment
     crimeSegmentM: 1000,     // segment length for crime analysis
@@ -19,7 +19,7 @@
       driving: ['https://routing.openstreetmap.de/routed-car/route/v1/driving', 'https://router.project-osrm.org/route/v1/driving'],
       foot: ['https://routing.openstreetmap.de/routed-foot/route/v1/foot'],
     },
-    overpass: ['https://overpass-api.de/api/interpreter', 'https://overpass.kumi.systems/api/interpreter'],
+    overpass: ['https://overpass-api.de/api/interpreter', 'https://overpass.private.coffee/api/interpreter', 'https://overpass.kumi.systems/api/interpreter'],
     crimeWeights: {
       'violent-crime': 3, 'robbery': 3, 'possession-of-weapons': 3,
       'public-order': 2, 'theft-from-the-person': 2, 'criminal-damage-arson': 2, 'drugs': 1.5,
@@ -259,39 +259,18 @@
     return null;
   }
 
-  async function getPOIs(lines) {
-    // one query around all routes; Overpass "around" accepts a polyline of coordinates
-    const pts = [];
-    lines.forEach((l) => resample(l, 400).forEach((p) => pts.push(p)));
-    const step = Math.max(1, Math.ceil(pts.length / 220));
-    const ll = pts.filter((_, i) => i % step === 0).map((p) => `${p[0].toFixed(5)},${p[1].toFixed(5)}`).join(',');
-    const a = (r) => `(around:${r},${ll})`;
-    const C = CFG.corridorM;
-    const q = `[out:json][timeout:90];
-(
-  nwr["amenity"="hospital"]${a(CFG.hospitalSearchM)};
-  nwr["healthcare"="hospital"]${a(CFG.hospitalSearchM)};
-  nwr["amenity"~"^(clinic|doctors)$"]${a(C)};
-  nwr["amenity"="pharmacy"]${a(C)};
-  nwr["amenity"="police"]${a(C)};
-  nwr["amenity"="fire_station"]${a(C)};
-  nwr["amenity"="embassy"]${a(C)};
-  nwr["office"="diplomatic"]${a(C)};
-  nwr["amenity"="fuel"]${a(C)};
-  nwr["tourism"="hotel"]${a(C)};
-  nwr["railway"="station"]${a(C)};
-  nwr["public_transport"="station"]${a(C)};
-  way["bridge"]["bridge"!="no"]["highway"~"^(motorway|trunk|primary|secondary|tertiary|unclassified|residential)$"]${a(CFG.chokeM)};
-  way["tunnel"]["tunnel"!="no"]["highway"]${a(CFG.chokeM)};
-);
-out center tags;`;
-    const j = await firstOk(CFG.overpass, (u) => fetchJSON(u, {
+  // Public Overpass servers are often busy: query all mirrors in parallel and keep the first good answer.
+  function raceOk(urls, make) {
+    return Promise.any(urls.map((u) => make(u))).catch((e) => { throw (e.errors && e.errors[0]) || e; });
+  }
+  function overpassQuery(q) {
+    return raceOk(CFG.overpass, (u) => fetchJSON(u, {
       method: 'POST', body: 'data=' + encodeURIComponent(q),
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    }, 95000));
-    const seen = new Set();
-    const out = [];
-    for (const el of j.elements || []) {
+    }, 150000));
+  }
+  function parsePOIs(elements, seen, out) {
+    for (const el of elements || []) {
       const t = el.tags || {};
       const cat = classify(t);
       if (!cat) continue;
@@ -302,6 +281,41 @@ out center tags;`;
       seen.add(key);
       out.push({ cat, lat, lon, name: t.name || t['name:en'] || CATS[cat].label.replace(/s$/, ''), tags: t });
     }
+  }
+  // Two smaller queries in parallel: essential services first, then logistics and choke points.
+  async function getPOIs(lines) {
+    const pts = [];
+    lines.forEach((l) => resample(l, 400).forEach((p) => pts.push(p)));
+    const step = Math.max(1, Math.ceil(pts.length / 150));
+    const ll = pts.filter((_, i) => i % step === 0).map((p) => `${p[0].toFixed(5)},${p[1].toFixed(5)}`).join(',');
+    const a = (r) => `(around:${r},${ll})`;
+    const C = CFG.corridorM;
+    const essential = `[out:json][timeout:120];
+(
+  nwr["amenity"="hospital"]${a(CFG.hospitalSearchM)};
+  nwr["healthcare"="hospital"]${a(CFG.hospitalSearchM)};
+  nwr["amenity"="police"]${a(C)};
+  nwr["amenity"="fire_station"]${a(C)};
+  nwr["amenity"="embassy"]${a(C)};
+  nwr["office"="diplomatic"]${a(C)};
+);
+out center tags;`;
+    const secondary = `[out:json][timeout:120];
+(
+  nwr["amenity"~"^(clinic|doctors|pharmacy|fuel)$"]${a(C)};
+  nwr["tourism"="hotel"]${a(C)};
+  nwr["railway"="station"]${a(C)};
+  nwr["public_transport"="station"]${a(C)};
+  way["bridge"]["bridge"!="no"]["highway"~"^(motorway|trunk|primary|secondary|tertiary|unclassified|residential)$"]${a(CFG.chokeM)};
+  way["tunnel"]["tunnel"!="no"]["highway"]${a(CFG.chokeM)};
+);
+out center tags;`;
+    const [e1, e2] = await Promise.allSettled([overpassQuery(essential), overpassQuery(secondary)]);
+    if (e1.status === 'rejected' && e2.status === 'rejected') throw e1.reason;
+    const seen = new Set(); const out = [];
+    if (e1.status === 'fulfilled') parsePOIs(e1.value.elements, seen, out);
+    if (e2.status === 'fulfilled') parsePOIs(e2.value.elements, seen, out);
+    out.partial = e1.status === 'rejected' ? 'essential services' : e2.status === 'rejected' ? 'secondary points of interest' : null;
     return out;
   }
 
@@ -601,7 +615,8 @@ out center tags;`;
         crimeEligible ? crimeLatestMonth() : Promise.resolve(null),
       ]);
       const warn = [];
-      state.pois = pois.status === 'fulfilled' ? pois.value : (warn.push('points of interest unavailable'), []);
+      state.pois = pois.status === 'fulfilled' ? pois.value : (warn.push('points of interest unavailable (map data servers busy: try again in a few minutes)'), []);
+      if (state.pois.partial) warn.push(`${state.pois.partial} unavailable (map data servers busy)`);
       state.weather = wx.status === 'fulfilled' ? wx.value : (warn.push('weather unavailable'), null);
       state.crimeDate = cDate.status === 'fulfilled' ? cDate.value : null;
 
