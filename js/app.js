@@ -301,11 +301,24 @@
     try { return await overpassQuery(q); }
     catch (e) { if (e.name === 'AbortError' && state.ctl?.signal.aborted) throw e; await sleep(4000); return overpassQuery(q); }
   }
-  function overpassQuery(q) {
-    return raceOk(CFG.overpass, (u) => fetchJSON(u, {
+  const CACHE_TTL = 7 * 24 * 3600 * 1000;
+  function qKey(q) { let h = 0; for (let i = 0; i < q.length; i++) h = (h * 31 + q.charCodeAt(i)) | 0; return 'rrp:ov:' + h; }
+  function cacheGet(k) {
+    try { const v = JSON.parse(localStorage.getItem(k)); return v && Date.now() - v.t < CACHE_TTL ? v.d : null; } catch (e) { return null; }
+  }
+  function cacheSet(k, d) {
+    try { localStorage.setItem(k, JSON.stringify({ t: Date.now(), d })); } catch (e) { /* storage full or unavailable */ }
+  }
+  async function overpassQuery(q) {
+    const k = qKey(q);
+    const hit = cacheGet(k);
+    if (hit) return hit;
+    const j = await raceOk(CFG.overpass, (u) => fetchJSON(u, {
       method: 'POST', body: 'data=' + encodeURIComponent(q),
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     }, 90000));
+    cacheSet(k, { elements: (j.elements || []).map((e) => ({ lat: e.lat, lon: e.lon, center: e.center, tags: e.tags })) });
+    return j;
   }
   function parsePOIs(elements, seen, out) {
     for (const el of elements || []) {
@@ -651,8 +664,12 @@ out center tags;`,
     const labels = { pois1: 'emergency services', pois2: 'clinics and pharmacies', pois3: 'fuel, hotels and transit', pois4: 'bridges and tunnels', wx: 'weather', crime: 'crime data' };
     const left = [...pending].map((k) => labels[k]);
     const warn = state.warn.length ? ` Note: ${state.warn.join('; ')}.` : '';
-    if (left.length) setStatus(`${state.routes.length} route(s) shown. Loading ${left.join(', ')}…${warn}`);
-    else {
+    if (left.length) {
+      const secs = Math.round((Date.now() - state.startedAt) / 1000);
+      setStatus(`<span class="spinner"></span>${state.routes.length} route(s) shown. Loading ${left.join(', ')}… <b>${secs} s</b>` +
+        `<br><span class="hint">Map data comes from public OpenStreetMap servers and can take up to a minute or two.</span>${warn}`);
+    } else {
+      clearInterval(state.ticker);
       state.analysedAt = new Date();
       setStatus(`Analysis complete: ${state.routes.length} route(s).${warn}`, warn ? '' : 'ok');
       $('#btn-report').disabled = false;
@@ -675,6 +692,9 @@ out center tags;`,
     state.ctl?.abort();
     const run = ++runId;
     state.ctl = new AbortController();
+    clearInterval(state.ticker);
+    state.startedAt = Date.now();
+    state.ticker = setInterval(() => progress(run), 1000);
     pending.clear();
     Object.assign(state, { routes: [], pois: [], weather: null, crimeDate: null, warn: [], active: 0 });
     routeLayer.clearLayers(); Object.values(poiLayers).forEach((l) => l.clearLayers());
@@ -723,18 +743,51 @@ out center tags;`,
       }
     } catch (e) {
       if (run !== runId || e.name === 'AbortError') return;
+      clearInterval(state.ticker);
       console.error(e);
       setStatus(esc(e.message || 'Something went wrong. Please try again.'), 'err');
     }
   }
 
   function clearAll() {
-    state.ctl?.abort(); runId++; pending.clear();
+    state.ctl?.abort(); runId++; pending.clear(); clearInterval(state.ticker);
     Object.assign(state, { routes: [], pois: [], weather: null, warn: [] });
     routeLayer.clearLayers(); endpointLayer.clearLayers();
     Object.values(poiLayers).forEach((l) => l.clearLayers());
     $('#origin').value = ''; $('#destination').value = '';
     renderResults(); setStatus(''); $('#btn-report').disabled = true; $('#btn-analyse').disabled = false;
+  }
+
+  // ---------- Demo ----------
+  // A saved snapshot of a full live analysis, so the tool can be explored instantly
+  // without waiting for the public data servers.
+  async function loadDemo() {
+    state.ctl?.abort(); clearInterval(state.ticker);
+    state.ctl = new AbortController();
+    const run = ++runId; pending.clear();
+    setStatus('Loading demo…');
+    try {
+      const demo = await fetchJSON('demo-london.json?v=6', {}, 20000);
+      if (run !== runId) return;
+      $('#origin').value = demo.originText; $('#destination').value = demo.destinationText;
+      $('#departure').value = demo.departure; $('#mode').value = demo.mode;
+      Object.assign(state, {
+        origin: demo.origin, destination: demo.destination, routes: demo.routes, pois: demo.pois,
+        weather: demo.weather, crimeDate: demo.crimeDate, warn: [], active: 0,
+      });
+      endpointLayer.clearLayers();
+      L.circleMarker([demo.origin.lat, demo.origin.lon], { radius: 8, color: '#fff', weight: 2, fillColor: '#2bb3a3', fillOpacity: 1 }).bindTooltip('Origin: ' + esc(demo.origin.name)).addTo(endpointLayer);
+      L.circleMarker([demo.destination.lat, demo.destination.lon], { radius: 8, color: '#fff', weight: 2, fillColor: '#e5534b', fillOpacity: 1 }).bindTooltip('Destination: ' + esc(demo.destination.name)).addTo(endpointLayer);
+      map.fitBounds(L.latLngBounds(demo.routes.flatMap((r) => r.coords)), { padding: [40, 40] });
+      state.routes.forEach(assessRoute);
+      crimeTiers();
+      renderRoutes(); renderResults();
+      state.analysedAt = new Date(demo.capturedAt);
+      setStatus(`Demo loaded: saved live analysis from ${new Date(demo.capturedAt).toLocaleDateString()}. Enter any route and press "Analyse route" for a live assessment.`, 'ok');
+      $('#btn-report').disabled = false;
+    } catch (e) {
+      setStatus('Demo unavailable. Please run a live analysis.', 'err');
+    }
   }
 
   // ---------- Report ----------
@@ -772,6 +825,7 @@ out center tags;`,
   // ---------- Wire up ----------
   $('#btn-analyse').addEventListener('click', analyse);
   $('#btn-clear').addEventListener('click', clearAll);
+  $('#btn-demo').addEventListener('click', loadDemo);
   $('#btn-report').addEventListener('click', exportReport);
   $('#btn-about').addEventListener('click', () => $('#about').showModal());
   ['#origin', '#destination'].forEach((s) => $(s).addEventListener('keydown', (e) => { if (e.key === 'Enter') analyse(); }));
