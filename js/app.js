@@ -26,6 +26,7 @@
     },
   };
 
+  const DEFAULT_ON = ['hospital', 'police', 'fire', 'diplomatic'];
   const CATS = {
     hospital:  { label: 'Hospitals',            short: 'H', color: '#e5534b' },
     clinic:    { label: 'Clinics & doctors',    short: 'C', color: '#f0883e' },
@@ -140,7 +141,14 @@
   const routeLayer = L.layerGroup().addTo(map);
   const endpointLayer = L.layerGroup().addTo(map);
   const poiLayers = {};
-  Object.keys(CATS).forEach((k) => { poiLayers[k] = L.layerGroup().addTo(map); });
+  Object.keys(CATS).forEach((k) => {
+    const color = CATS[k].color;
+    poiLayers[k] = L.markerClusterGroup ? L.markerClusterGroup({
+      maxClusterRadius: 45, showCoverageOnHover: false, spiderfyOnMaxZoom: true,
+      iconCreateFunction: (cl) => L.divIcon({ className: '', html: `<div class="poi-cluster" style="background:${color}">${cl.getChildCount()}</div>`, iconSize: [30, 30], iconAnchor: [15, 15] }),
+    }) : L.layerGroup();
+    if (DEFAULT_ON.includes(k)) poiLayers[k].addTo(map);
+  });
   const zoneLayer = new L.FeatureGroup().addTo(map);
 
   // Draw control for analyst zones
@@ -202,7 +210,7 @@
 
   // Layer toggles
   $('#layers').innerHTML = Object.entries(CATS).map(([k, c]) =>
-    `<label><input type="checkbox" data-layer="${k}" checked><span class="swatch" style="background:${c.color}"></span>${c.label}</label>`).join('');
+    `<label><input type="checkbox" data-layer="${k}"${DEFAULT_ON.includes(k) ? ' checked' : ''}><span class="swatch" style="background:${c.color}"></span>${c.label}</label>`).join('');
   document.querySelectorAll('[data-layer]').forEach((cb) => cb.addEventListener('change', () => {
     const l = poiLayers[cb.dataset.layer];
     cb.checked ? map.addLayer(l) : map.removeLayer(l);
@@ -289,6 +297,10 @@
   function raceOk(urls, make) {
     return Promise.any(urls.map((u) => make(u))).catch((e) => { throw (e.errors && e.errors[0]) || e; });
   }
+  async function overpassRetry(q) {
+    try { return await overpassQuery(q); }
+    catch (e) { if (e.name === 'AbortError' && state.ctl?.signal.aborted) throw e; await sleep(4000); return overpassQuery(q); }
+  }
   function overpassQuery(q) {
     return raceOk(CFG.overpass, (u) => fetchJSON(u, {
       method: 'POST', body: 'data=' + encodeURIComponent(q),
@@ -327,12 +339,21 @@
   nwr["office"="diplomatic"]${a(C)};
 );
 out center tags;`,
-      secondary: `[out:json][timeout:80];
+      medical: `[out:json][timeout:60];
 (
-  nwr["amenity"~"^(clinic|doctors|pharmacy|fuel)$"]${a(C)};
+  nwr["amenity"~"^(clinic|doctors|pharmacy)$"]${a(C)};
+);
+out center tags;`,
+      logistics: `[out:json][timeout:60];
+(
+  nwr["amenity"="fuel"]${a(C)};
   nwr["tourism"="hotel"]${a(C)};
   nwr["railway"="station"]${a(C)};
   nwr["public_transport"="station"]${a(C)};
+);
+out center tags;`,
+      choke: `[out:json][timeout:60];
+(
   way["bridge"]["bridge"!="no"]["highway"~"^(motorway|trunk|primary|secondary|tertiary|unclassified|residential)$"]${a(CFG.chokeM)};
   way["tunnel"]["tunnel"!="no"]["highway"]${a(CFG.chokeM)};
 );
@@ -547,6 +568,17 @@ out center tags;`,
     });
   }
 
+  function keyFacilities(r) {
+    const line = resample(r.coords, 200);
+    const near = (cat, n) => state.pois.filter((p) => p.cat === cat)
+      .map((p) => ({ p, d: distToLine([p.lat, p.lon], line) }))
+      .sort((a, b) => a.d - b.d).slice(0, n);
+    const rows = [['hospital', 3], ['police', 2], ['fire', 1], ['diplomatic', 2]].flatMap(([cat, n]) =>
+      near(cat, n).map(({ p, d }) => `<span class="k"><span class="swatch" style="background:${CATS[cat].color}"></span> ${esc(p.name)}</span><span>${d < 1000 ? Math.round(d) + ' m' : fmtKm(d)}</span>`));
+    if (!rows.length) return '';
+    return `<div class="subhead">Nearest key facilities (distance from route)</div><div class="factors">${rows.join('')}</div>`;
+  }
+
   function pill(sev, text) { return `<span class="pill ${sev}">${text ?? SEV_LABEL[sev]}</span>`; }
 
   function renderResults() {
@@ -575,6 +607,7 @@ out center tags;`,
           <span class="k">Weather</span>${pill(r.wxSev, r.wxSev === 'grey' ? 'Beyond forecast' : SEV_LABEL[r.wxSev])}
           <span class="k">Medical access</span>${pill(r.medSev, isFinite(r.maxHospM) ? `≤ ${fmtKm(r.maxHospM)}` : 'None')}
         </div>
+        ${keyFacilities(r)}
         <div class="subhead">In corridor (${CFG.corridorM} m)</div>
         <div class="factors">
           <span class="k">Hospitals / clinics / pharmacies</span><span>${c.hospital} / ${c.clinic} / ${c.pharmacy}</span>
@@ -615,7 +648,7 @@ out center tags;`,
   const pending = new Set();
   function progress(run) {
     if (run !== runId) return;
-    const labels = { pois1: 'emergency services', pois2: 'other points of interest', wx: 'weather', crime: 'crime data' };
+    const labels = { pois1: 'emergency services', pois2: 'clinics and pharmacies', pois3: 'fuel, hotels and transit', pois4: 'bridges and tunnels', wx: 'weather', crime: 'crime data' };
     const left = [...pending].map((k) => labels[k]);
     const warn = state.warn.length ? ` Note: ${state.warn.join('; ')}.` : '';
     if (left.length) setStatus(`${state.routes.length} route(s) shown. Loading ${left.join(', ')}…${warn}`);
@@ -668,8 +701,11 @@ out center tags;`,
       const lines = routes.map((r) => r.coords);
       const q = poiQueries(lines);
       const mergePOIs = (j) => { const seen = new Set(state.pois.map((p) => `${p.cat}:${p.name}:${p.lat.toFixed(4)}:${p.lon.toFixed(4)}`)); parsePOIs(j.elements, seen, state.pois); };
-      task(run, 'pois1', overpassQuery(q.essential), mergePOIs, 'emergency services unavailable (map data servers busy, try again in a few minutes)');
-      task(run, 'pois2', overpassQuery(q.secondary), mergePOIs, 'other points of interest unavailable (map data servers busy)');
+      const busy = ' unavailable (public map data servers busy; run the analysis again in a few minutes)';
+      task(run, 'pois1', overpassRetry(q.essential), mergePOIs, 'emergency services' + busy);
+      task(run, 'pois2', overpassRetry(q.medical), mergePOIs, 'clinics and pharmacies' + busy);
+      task(run, 'pois3', overpassRetry(q.logistics), mergePOIs, 'fuel, hotels and transit' + busy);
+      task(run, 'pois4', overpassRetry(q.choke), mergePOIs, 'bridges and tunnels' + busy);
       const main = routes[0].coords, mid = main[Math.floor(main.length / 2)];
       task(run, 'wx', getWeather([[o.lat, o.lon], mid, [d.lat, d.lon]]), (w) => { state.weather = w; }, 'weather unavailable');
       if (routes.every((r) => resample(r.coords, 2000).every(inPoliceUKArea))) {
