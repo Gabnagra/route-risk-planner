@@ -115,3 +115,7 @@ dialog p { font-size: 13px; line-height: 1.55; }
   .panel { border-right: none; border-bottom: 1px solid var(--line); max-height: none; }
   .map-wrap { min-height: 60vh; }
 }
+
+.poi-cluster { width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; font-size: 11px; font-weight: 700;
+  color: #fff; border: 2px solid #0e141b; box-shadow: 0 0 0 2px rgba(255,255,255,.35); opacity: .92; }
+.factors .k .swatch { width: 9px; height: 9px; vertical-align: middle; margin-right: 2px; }
