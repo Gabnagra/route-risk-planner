@@ -107,6 +107,8 @@
   async function fetchJSON(url, opts = {}, timeoutMs = 45000) {
     const ctl = new AbortController();
     const t = setTimeout(() => ctl.abort(), timeoutMs);
+    const runSignal = state.ctl?.signal;
+    if (runSignal) { if (runSignal.aborted) ctl.abort(); else runSignal.addEventListener('abort', () => ctl.abort(), { once: true }); }
     try {
       const r = await fetch(url, { ...opts, signal: ctl.signal });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -233,16 +235,40 @@
     return { lat: +j[0].lat, lon: +j[0].lon, name: j[0].display_name.split(',').slice(0, 3).join(',') };
   }
 
-  async function getRoutes(o, d, mode) {
-    const path = `${o.lon},${o.lat};${d.lon},${d.lat}?alternatives=3&overview=full&geometries=geojson&steps=false`;
-    const j = await firstOk(CFG.routing[mode], (base) => fetchJSON(`${base}/${path}`));
+  async function osrm(points, mode, alternatives) {
+    const path = points.map((p) => `${p.lon},${p.lat}`).join(';') +
+      `?alternatives=${alternatives ? 3 : 'false'}&overview=full&geometries=geojson&steps=false`;
+    const j = await firstOk(CFG.routing[mode], (base) => fetchJSON(`${base}/${path}`, {}, 30000));
     if (j.code !== 'Ok' || !j.routes?.length) throw new Error('No route found between these points.');
-    return j.routes.slice(0, 3).map((r, i) => ({
-      id: i,
-      name: i === 0 ? 'Route A (fastest)' : `Route ${String.fromCharCode(65 + i)} (alternative)`,
-      coords: r.geometry.coordinates.map(([lon, lat]) => [lat, lon]),
-      distance: r.distance, duration: r.duration,
-    }));
+    return j.routes;
+  }
+  const toRoute = (r) => ({ coords: r.geometry.coordinates.map(([lon, lat]) => [lat, lon]), distance: r.distance, duration: r.duration });
+  function overlap(a, b) { // share of route a lying within 60 m of route b
+    const pa = resample(a.coords, 150), lb = resample(b.coords, 100);
+    return pa.filter((p) => distToLine(p, lb) <= 60).length / pa.length;
+  }
+  async function getRoutes(o, d, mode) {
+    const routes = (await osrm([o, d], mode, true)).slice(0, 3).map(toRoute);
+    if (routes.length < 3) {
+      // The router often returns no alternative on short or urban trips: force detours through
+      // via-points offset to either side of the direct line, and keep those that differ enough.
+      const dist = hav([o.lat, o.lon], [d.lat, d.lon]);
+      const off = Math.min(5000, Math.max(400, dist * 0.25));
+      const mLat = (o.lat + d.lat) / 2, mLon = (o.lon + d.lon) / 2;
+      const kx = Math.cos(toRad(mLat));
+      const dx = (d.lon - o.lon) * kx, dy = d.lat - o.lat, n = Math.hypot(dx, dy) || 1;
+      const deg = off / 111000;
+      const vias = [1, -1].map((sgn) => ({ lat: mLat + sgn * (dx / n) * deg, lon: mLon - sgn * (dy / n) * deg / kx }));
+      const extra = await Promise.allSettled(vias.map((v) => osrm([o, v, d], mode, false)));
+      for (const e of extra) {
+        if (routes.length >= 3 || e.status !== 'fulfilled') continue;
+        const r = toRoute(e.value[0]);
+        if (r.duration > routes[0].duration * 2.2) continue;
+        if (routes.every((q) => overlap(r, q) < 0.8)) routes.push(r);
+      }
+    }
+    routes.sort((a, b) => a.duration - b.duration);
+    return routes.map((r, i) => ({ ...r, id: i, name: i === 0 ? 'Route A (fastest)' : `Route ${String.fromCharCode(65 + i)} (alternative)` }));
   }
 
   function classify(t) {
@@ -267,7 +293,7 @@
     return raceOk(CFG.overpass, (u) => fetchJSON(u, {
       method: 'POST', body: 'data=' + encodeURIComponent(q),
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    }, 150000));
+    }, 90000));
   }
   function parsePOIs(elements, seen, out) {
     for (const el of elements || []) {
@@ -282,15 +308,16 @@
       out.push({ cat, lat, lon, name: t.name || t['name:en'] || CATS[cat].label.replace(/s$/, ''), tags: t });
     }
   }
-  // Two smaller queries in parallel: essential services first, then logistics and choke points.
-  async function getPOIs(lines) {
+  // Two smaller queries, run independently: essential services, then logistics and choke points.
+  function poiQueries(lines) {
     const pts = [];
     lines.forEach((l) => resample(l, 400).forEach((p) => pts.push(p)));
-    const step = Math.max(1, Math.ceil(pts.length / 150));
+    const step = Math.max(1, Math.ceil(pts.length / 100));
     const ll = pts.filter((_, i) => i % step === 0).map((p) => `${p[0].toFixed(5)},${p[1].toFixed(5)}`).join(',');
     const a = (r) => `(around:${r},${ll})`;
     const C = CFG.corridorM;
-    const essential = `[out:json][timeout:120];
+    return {
+      essential: `[out:json][timeout:80];
 (
   nwr["amenity"="hospital"]${a(CFG.hospitalSearchM)};
   nwr["healthcare"="hospital"]${a(CFG.hospitalSearchM)};
@@ -299,8 +326,8 @@
   nwr["amenity"="embassy"]${a(C)};
   nwr["office"="diplomatic"]${a(C)};
 );
-out center tags;`;
-    const secondary = `[out:json][timeout:120];
+out center tags;`,
+      secondary: `[out:json][timeout:80];
 (
   nwr["amenity"~"^(clinic|doctors|pharmacy|fuel)$"]${a(C)};
   nwr["tourism"="hotel"]${a(C)};
@@ -309,14 +336,8 @@ out center tags;`;
   way["bridge"]["bridge"!="no"]["highway"~"^(motorway|trunk|primary|secondary|tertiary|unclassified|residential)$"]${a(CFG.chokeM)};
   way["tunnel"]["tunnel"!="no"]["highway"]${a(CFG.chokeM)};
 );
-out center tags;`;
-    const [e1, e2] = await Promise.allSettled([overpassQuery(essential), overpassQuery(secondary)]);
-    if (e1.status === 'rejected' && e2.status === 'rejected') throw e1.reason;
-    const seen = new Set(); const out = [];
-    if (e1.status === 'fulfilled') parsePOIs(e1.value.elements, seen, out);
-    if (e2.status === 'fulfilled') parsePOIs(e2.value.elements, seen, out);
-    out.partial = e1.status === 'rejected' ? 'essential services' : e2.status === 'rejected' ? 'secondary points of interest' : null;
-    return out;
+out center tags;`,
+    };
   }
 
   async function getWeather(pts) {
@@ -588,66 +609,96 @@ out center tags;`;
   function selectRoute(i) { state.active = i; renderRoutes(); renderResults(); }
 
   // ---------- Main flow ----------
+  // Each analysis is a "run". Starting a new run or pressing Clear cancels the previous one;
+  // results are drawn progressively as each data source answers.
+  let runId = 0;
+  const pending = new Set();
+  function progress(run) {
+    if (run !== runId) return;
+    const labels = { pois1: 'emergency services', pois2: 'other points of interest', wx: 'weather', crime: 'crime data' };
+    const left = [...pending].map((k) => labels[k]);
+    const warn = state.warn.length ? ` Note: ${state.warn.join('; ')}.` : '';
+    if (left.length) setStatus(`${state.routes.length} route(s) shown. Loading ${left.join(', ')}…${warn}`);
+    else {
+      state.analysedAt = new Date();
+      setStatus(`Analysis complete: ${state.routes.length} route(s).${warn}`, warn ? '' : 'ok');
+      $('#btn-report').disabled = false;
+    }
+  }
+  function refresh(run) {
+    if (run !== runId) return;
+    state.routes.forEach(assessRoute);
+    if (state.routes.some((r) => r.crime)) crimeTiers();
+    renderRoutes(); renderResults(); progress(run);
+  }
+  function task(run, key, promise, onOk, failMsg) {
+    pending.add(key); progress(run);
+    promise.then((v) => { if (run === runId) onOk(v); })
+      .catch(() => { if (run === runId && failMsg) state.warn.push(failMsg); })
+      .finally(() => { if (run !== runId) return; pending.delete(key); refresh(run); });
+  }
+
   async function analyse() {
-    const btn = $('#btn-analyse');
-    btn.disabled = true; $('#btn-report').disabled = true;
+    state.ctl?.abort();
+    const run = ++runId;
+    state.ctl = new AbortController();
+    pending.clear();
+    Object.assign(state, { routes: [], pois: [], weather: null, crimeDate: null, warn: [], active: 0 });
+    routeLayer.clearLayers(); Object.values(poiLayers).forEach((l) => l.clearLayers());
+    renderResults(); $('#btn-report').disabled = true;
     try {
-      setStatus('Geocoding…');
+      if (!$('#origin').value.trim() || !$('#destination').value.trim()) throw new Error('Enter an origin and a destination (or click twice on the map).');
+      setStatus('Locating origin and destination…');
       const [o, d] = await Promise.all([geocode($('#origin').value), geocode($('#destination').value)]);
+      if (run !== runId) return;
       state.origin = o; state.destination = d;
       endpointLayer.clearLayers();
       L.circleMarker([o.lat, o.lon], { radius: 8, color: '#fff', weight: 2, fillColor: '#2bb3a3', fillOpacity: 1 }).bindTooltip('Origin: ' + esc(o.name)).addTo(endpointLayer);
       L.circleMarker([d.lat, d.lon], { radius: 8, color: '#fff', weight: 2, fillColor: '#e5534b', fillOpacity: 1 }).bindTooltip('Destination: ' + esc(d.name)).addTo(endpointLayer);
 
       setStatus('Calculating routes and alternatives…');
-      state.routes = await getRoutes(o, d, $('#mode').value);
-      state.active = 0;
-      map.fitBounds(L.latLngBounds(state.routes.flatMap((r) => r.coords)), { padding: [40, 40] });
-      renderRoutes();
+      const routes = await getRoutes(o, d, $('#mode').value);
+      if (run !== runId) return;
+      state.routes = routes;
+      map.fitBounds(L.latLngBounds(routes.flatMap((r) => r.coords)), { padding: [40, 40] });
+      if (routes.length === 1) state.warn.push('no distinct alternative route found');
+      refresh(run);
 
-      setStatus('Querying points of interest, weather and crime data…');
-      const main = state.routes[0].coords;
-      const mid = main[Math.floor(main.length / 2)];
-      const crimeEligible = state.routes.every((r) => resample(r.coords, 2000).every(inPoliceUKArea));
-      const [pois, wx, cDate] = await Promise.allSettled([
-        getPOIs(state.routes.map((r) => r.coords)),
-        getWeather([[o.lat, o.lon], mid, [d.lat, d.lon]]),
-        crimeEligible ? crimeLatestMonth() : Promise.resolve(null),
-      ]);
-      const warn = [];
-      state.pois = pois.status === 'fulfilled' ? pois.value : (warn.push('points of interest unavailable (map data servers busy: try again in a few minutes)'), []);
-      if (state.pois.partial) warn.push(`${state.pois.partial} unavailable (map data servers busy)`);
-      state.weather = wx.status === 'fulfilled' ? wx.value : (warn.push('weather unavailable'), null);
-      state.crimeDate = cDate.status === 'fulfilled' ? cDate.value : null;
-
-      state.routes.forEach(assessRoute);
-
-      if (crimeEligible && state.crimeDate) {
-        for (const r of state.routes) {
-          r.crime = await analyseCrime(r, state.crimeDate, (n, t) => setStatus(`Crime analysis · ${esc(r.name)}: ${n}/${t} segments…`));
-        }
-        crimeTiers();
-        if (state.routes.every((r) => !r.crime)) warn.push('crime data unavailable');
+      // Independent data sources, each drawn as soon as it answers
+      const lines = routes.map((r) => r.coords);
+      const q = poiQueries(lines);
+      const mergePOIs = (j) => { const seen = new Set(state.pois.map((p) => `${p.cat}:${p.name}:${p.lat.toFixed(4)}:${p.lon.toFixed(4)}`)); parsePOIs(j.elements, seen, state.pois); };
+      task(run, 'pois1', overpassQuery(q.essential), mergePOIs, 'emergency services unavailable (map data servers busy, try again in a few minutes)');
+      task(run, 'pois2', overpassQuery(q.secondary), mergePOIs, 'other points of interest unavailable (map data servers busy)');
+      const main = routes[0].coords, mid = main[Math.floor(main.length / 2)];
+      task(run, 'wx', getWeather([[o.lat, o.lon], mid, [d.lat, d.lon]]), (w) => { state.weather = w; }, 'weather unavailable');
+      if (routes.every((r) => resample(r.coords, 2000).every(inPoliceUKArea))) {
+        task(run, 'crime', (async () => {
+          const date = await crimeLatestMonth();
+          if (!date) throw new Error('no date');
+          state.crimeDate = date;
+          for (const r of routes) {
+            if (run !== runId) return;
+            r.crime = await analyseCrime(r, date);
+            refresh(run);
+          }
+          if (routes.every((r) => !r.crime)) throw new Error('none');
+        })(), () => {}, 'crime data unavailable');
       }
-
-      state.analysedAt = new Date();
-      renderRoutes(); renderResults();
-      setStatus(`Analysis complete: ${state.routes.length} route(s).${warn.length ? ' Note: ' + warn.join(', ') + '.' : ''}`, warn.length ? '' : 'ok');
-      $('#btn-report').disabled = false;
     } catch (e) {
+      if (run !== runId || e.name === 'AbortError') return;
       console.error(e);
       setStatus(esc(e.message || 'Something went wrong. Please try again.'), 'err');
-    } finally {
-      btn.disabled = false;
     }
   }
 
   function clearAll() {
-    state.routes = []; state.pois = []; state.weather = null;
+    state.ctl?.abort(); runId++; pending.clear();
+    Object.assign(state, { routes: [], pois: [], weather: null, warn: [] });
     routeLayer.clearLayers(); endpointLayer.clearLayers();
     Object.values(poiLayers).forEach((l) => l.clearLayers());
     $('#origin').value = ''; $('#destination').value = '';
-    renderResults(); setStatus(''); $('#btn-report').disabled = true;
+    renderResults(); setStatus(''); $('#btn-report').disabled = true; $('#btn-analyse').disabled = false;
   }
 
   // ---------- Report ----------
