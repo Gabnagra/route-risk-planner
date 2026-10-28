@@ -1,0 +1,117 @@
+:root {
+  --bg: #0e141b;
+  --panel: #141c25;
+  --card: #18222d;
+  --line: #263341;
+  --text: #dfe7ef;
+  --muted: #8a9bad;
+  --accent: #2bb3a3;
+  --accent-2: #1d7f74;
+  --green: #3fb950;
+  --amber: #e3a008;
+  --red: #e5534b;
+  --blue: #4c8dff;
+  --radius: 10px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, Arial, sans-serif;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); }
+body { display: flex; flex-direction: column; }
+
+.topbar {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel);
+  gap: 12px; flex-wrap: wrap;
+}
+.brand { display: flex; align-items: center; gap: 12px; }
+.logo {
+  width: 38px; height: 38px; border-radius: 8px; border: 1px solid var(--accent);
+  display: grid; place-items: center; font-weight: 700; font-size: 12px; color: var(--accent);
+  letter-spacing: 1px;
+}
+.title { font-weight: 700; font-size: 17px; }
+.subtitle { font-size: 10.5px; color: var(--muted); letter-spacing: 1.4px; }
+.top-actions { display: flex; gap: 8px; }
+
+.layout { flex: 1; display: grid; grid-template-columns: 380px 1fr; min-height: 0; }
+.panel { overflow-y: auto; padding: 12px; border-right: 1px solid var(--line); background: var(--panel); }
+.map-wrap { position: relative; min-height: 0; }
+#map { position: absolute; inset: 0; background: #0b1016; }
+
+.card { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px; margin-bottom: 12px; }
+.card h2 { font-size: 12px; letter-spacing: 1.2px; text-transform: uppercase; color: var(--accent); margin: 0 0 10px; }
+label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+input, select {
+  width: 100%; margin-top: 4px; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line);
+  background: #0f171f; color: var(--text); font-size: 13px;
+}
+input:focus, select:focus { outline: 1px solid var(--accent); }
+.row { display: flex; gap: 8px; align-items: flex-end; }
+.grow { flex: 1; }
+.hint { font-size: 11.5px; color: var(--muted); margin: 4px 0 10px; line-height: 1.45; }
+
+.btn {
+  border-radius: 8px; padding: 8px 12px; font-size: 13px; cursor: pointer;
+  border: 1px solid var(--line); background: transparent; color: var(--text);
+}
+.btn.primary { background: var(--accent-2); border-color: var(--accent); color: #fff; font-weight: 600; }
+.btn.primary:hover { background: var(--accent); }
+.btn.ghost:hover { border-color: var(--accent); }
+.btn:disabled { opacity: .45; cursor: not-allowed; }
+
+.status { font-size: 12px; color: var(--muted); margin-top: 8px; min-height: 16px; line-height: 1.5; }
+.status .err { color: var(--red); }
+.status .ok { color: var(--green); }
+
+.layers { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 10px; }
+.layers label { display: flex; align-items: center; gap: 6px; margin: 0; color: var(--text); font-size: 12.5px; cursor: pointer; }
+.layers input { width: auto; margin: 0; }
+.swatch { width: 12px; height: 12px; border-radius: 50%; display: inline-block; border: 2px solid #0e141b; box-shadow: 0 0 0 1px rgba(255,255,255,.25); }
+
+.zones-list { display: flex; flex-direction: column; gap: 6px; }
+.zone-item { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.zone-item select { margin: 0; padding: 4px 6px; width: auto; }
+.zone-item button { padding: 3px 8px; font-size: 11px; }
+
+.route-card { border: 1px solid var(--line); border-radius: 8px; padding: 10px; margin-bottom: 10px; cursor: pointer; }
+.route-card.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+.route-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 6px; }
+.route-head strong { font-size: 14px; }
+.route-head span { font-size: 12px; color: var(--muted); }
+.factors { display: grid; grid-template-columns: 1fr auto; gap: 4px 10px; font-size: 12px; }
+.factors .k { color: var(--muted); }
+.pill { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; }
+.pill.green { background: rgba(63,185,80,.15); color: var(--green); }
+.pill.amber { background: rgba(227,160,8,.15); color: var(--amber); }
+.pill.red { background: rgba(229,83,75,.15); color: var(--red); }
+.pill.grey { background: rgba(138,155,173,.15); color: var(--muted); }
+.notes { margin: 8px 0 0; padding-left: 16px; font-size: 11.5px; color: var(--muted); line-height: 1.45; }
+.subhead { font-size: 11px; letter-spacing: 1px; text-transform: uppercase; color: var(--muted); margin: 12px 0 6px; }
+.weather-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; font-size: 11.5px; }
+.weather-grid div { background: #0f171f; border: 1px solid var(--line); border-radius: 6px; padding: 6px; }
+.weather-grid b { display: block; font-size: 11px; color: var(--muted); font-weight: 600; margin-bottom: 2px; }
+
+.legend {
+  position: absolute; left: 12px; bottom: 22px; z-index: 500; background: rgba(20,28,37,.92);
+  border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font-size: 11.5px; max-width: 260px;
+}
+.legend .li { display: flex; align-items: center; gap: 6px; margin: 2px 0; }
+.legend .bar { width: 22px; height: 4px; border-radius: 2px; display: inline-block; }
+
+.poi-icon { width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center;
+  font-size: 10px; font-weight: 700; color: #fff; border: 2px solid #0e141b; box-shadow: 0 0 0 1px rgba(255,255,255,.35); }
+.leaflet-popup-content-wrapper, .leaflet-popup-tip { background: var(--card); color: var(--text); }
+.leaflet-popup-content { font-size: 12.5px; }
+.leaflet-container a.leaflet-popup-close-button { color: var(--muted); }
+
+dialog { max-width: 640px; background: var(--card); color: var(--text); border: 1px solid var(--line); border-radius: 12px; padding: 20px 22px; }
+dialog::backdrop { background: rgba(0,0,0,.6); }
+dialog h2 { margin-top: 0; color: var(--accent); font-size: 16px; }
+dialog li { margin-bottom: 6px; font-size: 13px; line-height: 1.5; }
+dialog p { font-size: 13px; line-height: 1.55; }
+
+@media (max-width: 860px) {
+  .layout { grid-template-columns: 1fr; grid-template-rows: auto 60vh; }
+  .panel { border-right: none; border-bottom: 1px solid var(--line); max-height: none; }
+  .map-wrap { min-height: 60vh; }
+}

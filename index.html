@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Route Risk Planner</title>
+<meta name="description" content="Open-source route risk assessment: alternative routes, emergency services, diplomatic posts, weather, daylight, crime exposure and analyst-defined risk zones.">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.css">
+<link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <div class="logo">RRP</div>
+    <div>
+      <div class="title">Route Risk Planner</div>
+      <div class="subtitle">OPEN-SOURCE ROUTE RISK ASSESSMENT</div>
+    </div>
+  </div>
+  <div class="top-actions">
+    <button id="btn-report" class="btn ghost" disabled>Export report</button>
+    <button id="btn-about" class="btn ghost">Method &amp; sources</button>
+  </div>
+</header>
+
+<main class="layout">
+  <aside class="panel">
+    <section class="card">
+      <h2>1 · Route</h2>
+      <label>Origin
+        <input id="origin" type="text" placeholder="Address, place or lat,lon" autocomplete="off">
+      </label>
+      <label>Destination
+        <input id="destination" type="text" placeholder="Address, place or lat,lon" autocomplete="off">
+      </label>
+      <div class="row">
+        <label class="grow">Departure
+          <input id="departure" type="datetime-local">
+        </label>
+        <label>Mode
+          <select id="mode">
+            <option value="driving">Vehicle</option>
+            <option value="foot">On foot</option>
+          </select>
+        </label>
+      </div>
+      <p class="hint">Tip: click the map to set origin, then destination.</p>
+      <div class="row">
+        <button id="btn-analyse" class="btn primary grow">Analyse route</button>
+        <button id="btn-clear" class="btn ghost">Clear</button>
+      </div>
+      <div id="status" class="status"></div>
+    </section>
+
+    <section class="card">
+      <h2>2 · Layers</h2>
+      <div class="layers" id="layers"></div>
+    </section>
+
+    <section class="card">
+      <h2>3 · Analyst risk zones</h2>
+      <p class="hint">Draw polygons on the map with the tool on the right, then set each zone's rating. Routes crossing a zone are flagged.</p>
+      <label>Rating for new zones
+        <select id="zone-rating">
+          <option value="high">High (red)</option>
+          <option value="medium" selected>Medium (amber)</option>
+          <option value="low">Low (green)</option>
+        </select>
+      </label>
+      <div id="zones-list" class="zones-list"></div>
+    </section>
+
+    <section class="card" id="results-card" hidden>
+      <h2>4 · Assessment</h2>
+      <div id="results"></div>
+    </section>
+  </aside>
+
+  <section class="map-wrap">
+    <div id="map"></div>
+    <div class="legend" id="legend"></div>
+  </section>
+</main>
+
+<dialog id="about">
+  <h2>Method &amp; sources</h2>
+  <p>The planner combines open data sources into a transparent, factor-by-factor assessment. It does <strong>not</strong> produce a probability of incident: every indicator is shown separately so the analyst can weigh it.</p>
+  <ul>
+    <li><strong>Routing and alternatives</strong>: OSRM, on OpenStreetMap data.</li>
+    <li><strong>Geocoding</strong>: Nominatim (OpenStreetMap).</li>
+    <li><strong>Points of interest</strong> within the route corridor (hospitals, clinics, pharmacies, police, fire stations, embassies and consulates, fuel, hotels, transit stations, bridges and tunnels): Overpass API (OpenStreetMap).</li>
+    <li><strong>Weather and daylight</strong> at origin, midpoint and destination for the departure hour: Open-Meteo.</li>
+    <li><strong>Crime exposure</strong> (England, Wales and Northern Ireland only): data.police.uk, latest available month. Street-level crimes within 150 m of each route segment, weighted by category, expressed per km and ranked relative to the other routes analysed. This is a <em>relative</em> index, not a probability.</li>
+    <li><strong>Analyst risk zones</strong>: polygons drawn and rated by the user, intended for areas where no open crime data exists or where local knowledge prevails.</li>
+    <li><strong>Medical access</strong>: straight-line distance from each point of the route to the nearest mapped hospital.</li>
+  </ul>
+  <p class="hint">Open data can be incomplete or out of date. The tool supports, and does not replace, a professional route assessment and reconnaissance.</p>
+  <form method="dialog"><button class="btn primary">Close</button></form>
+</dialog>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
