@@ -121,14 +121,19 @@
 
   // ---------- Map ----------
   const map = L.map('map', { zoomControl: true }).setView([40.4168, -3.7038], 6);
-  const dark = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-    maxZoom: 19, subdomains: 'abcd',
-    attribution: '&copy; OpenStreetMap contributors &copy; CARTO',
-  }).addTo(map);
+  const ESRI = 'https://server.arcgisonline.com/ArcGIS/rest/services';
+  const esriAttr = 'Tiles &copy; Esri &mdash; Esri, HERE, Garmin, &copy; OpenStreetMap contributors, and the GIS user community';
+  const dark = L.layerGroup([
+    L.tileLayer(`${ESRI}/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}`, { maxZoom: 19, maxNativeZoom: 16, attribution: esriAttr }),
+    L.tileLayer(`${ESRI}/Canvas/World_Dark_Gray_Reference/MapServer/tile/{z}/{y}/{x}`, { maxZoom: 19, maxNativeZoom: 16 }),
+  ]).addTo(map);
   const osm = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
     maxZoom: 19, attribution: '&copy; OpenStreetMap contributors',
   });
-  L.control.layers({ 'Dark': dark, 'OpenStreetMap': osm }, null, { position: 'topright' }).addTo(map);
+  const sat = L.tileLayer(`${ESRI}/World_Imagery/MapServer/tile/{z}/{y}/{x}`, {
+    maxZoom: 19, attribution: 'Tiles &copy; Esri &mdash; Source: Esri, Maxar, Earthstar Geographics, and the GIS user community',
+  });
+  L.control.layers({ 'Dark': dark, 'Streets (OpenStreetMap)': osm, 'Satellite': sat }, null, { position: 'topright' }).addTo(map);
 
   const routeLayer = L.layerGroup().addTo(map);
   const endpointLayer = L.layerGroup().addTo(map);
